@@ -1,8 +1,10 @@
-public const express = require('express');
+const express = require('express');
 const cors = require('cors');
 const { TatumSDK, Network } = require('@tatumio/sdk');
 const admin = require('firebase-admin');
 const logger = require('winston');
+const rateLimit = require('express-rate-limit');
+const DailyRotateFile = require('winston-daily-rotate-file');
 
 // Initialize Express app
 const app = express();
@@ -10,12 +12,15 @@ app.use(cors());
 app.use(express.json());
 
 // Initialize logger
-const logger = require('winston');
 logger.configure({
   transports: [
     new logger.transports.Console(),
-    new logger.transports.File({ filename: 'combined.log' })
-  ]
+    new DailyRotateFile({
+      filename: 'logs/combined-%DATE%.log',
+      datePattern: 'YYYY-MM-DD',
+      maxFiles: '14d',
+    }),
+  ],
 });
 
 // Initialize Firebase Admin SDK
@@ -27,27 +32,53 @@ const db = admin.firestore();
 
 // Initialize Tatum SDK
 const tatum = await TatumSDK.init({
-  network: Network.MAINNET, // Default to mainnet; switch to testnet for testing
+  network: process.env.NODE_ENV === 'production' ? Network.MAINNET : Network.TESTNET,
   apiKey: process.env.TATUM_API_KEY,
 });
 
 // Map symbols to Tatum networks
 const networkMap = {
-  'BTC': Network.BITCOIN,
-  'BNB': Network.BINANCE_SMART_CHAIN,
-  'ETH': Network.ETHEREUM,
-  'LTC': Network.LITECOIN,
-  'TRX': Network.TRON,
-  'USDT TRC-20': Network.TRON,
+  'BTC': process.env.NODE_ENV === 'production' ? Network.BITCOIN : Network.BITCOIN_TESTNET,
+  'BNB': process.env.NODE_ENV === 'production' ? Network.BINANCE_SMART_CHAIN : Network.BINANCE_SMART_CHAIN_TESTNET,
+  'ETH': process.env.NODE_ENV === 'production' ? Network.ETHEREUM : Network.ETHEREUM_SEPOLIA,
+  'LTC': process.env.NODE_ENV === 'production' ? Network.LITECOIN : Network.LITECOIN_TESTNET,
+  'TRX': process.env.NODE_ENV === 'production' ? Network.TRON : Network.TRON_TESTNET,
+  'USDT TRC-20': process.env.NODE_ENV === 'production' ? Network.TRON : Network.TRON_TESTNET,
+};
+
+// Rate limiting
+app.use('/wallet', rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100,
+  message: 'Too many requests, please try again later.',
+}));
+
+// Authentication middleware
+const verifyToken = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    logger.error('Missing or invalid authorization header');
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const idToken = authHeader.split('Bearer ')[1];
+  try {
+    const decodedToken = await admin.auth().verifyIdToken(idToken);
+    req.userId = decodedToken.uid;
+    next();
+  } catch (error) {
+    logger.error(`Token verification failed: ${error.message}`);
+    res.status(401).json({ error: 'Unauthorized' });
+  }
 };
 
 // Endpoint to generate wallet address
-app.post('/wallet', async (req, res) => {
-  const { userId, symbol } = req.body;
+app.post('/wallet', verifyToken, async (req, res) => {
+  const { symbol } = req.body;
+  const userId = req.userId;
 
-  if (!userId || !symbol || !networkMap[symbol]) {
+  if (!symbol || !networkMap[symbol]) {
     logger.error(`Invalid request: userId=${userId}, symbol=${symbol}`);
-    return res.status(400).json({ error: 'Invalid userId or symbol' });
+    return res.status(400).json({ error: 'Invalid symbol' });
   }
 
   try {
@@ -55,13 +86,11 @@ app.post('/wallet', async (req, res) => {
     const userDoc = await userDocRef.get();
     let userData = userDoc.exists ? userDoc.data() : { wallets: {} };
 
-    // Check if wallet address already exists
     if (userData.wallets?.[symbol]) {
       logger.info(`Wallet address for ${symbol} already exists for user ${userId}`);
       return res.json({ address: userData.wallets[symbol] });
     }
 
-    // Generate wallet using Tatum
     let wallet;
     switch (symbol) {
       case 'BTC':
@@ -86,20 +115,20 @@ app.post('/wallet', async (req, res) => {
         throw new Error('Unsupported symbol');
     }
 
-    // Generate address from wallet
+    logger.warn('Private keys not stored. Implement Tatum KMS for production.');
+
     const addressData = await tatum.api[symbol === 'BTC' ? 'btcGenerateAddress' : 
                                        symbol === 'BNB' ? 'bscGenerateAddress' :
                                        symbol === 'ETH' ? 'ethGenerateAddress' :
                                        symbol === 'LTC' ? 'ltcGenerateAddress' :
                                        'tronGenerateAddress'](
-      wallet.xpub || wallet.address, // Use xpub for BTC, LTC; address for TRX
-      0 // Derivation index
+      wallet.xpub || wallet.address,
+      0
     );
 
     const address = addressData.address;
     logger.info(`Generated ${symbol} address for user ${userId}: ${address}`);
 
-    // Store address in Firestore
     userData.wallets = userData.wallets || {};
     userData.wallets[symbol] = address;
     await userDocRef.set(userData, { merge: true });
@@ -111,13 +140,14 @@ app.post('/wallet', async (req, res) => {
   }
 });
 
-// Endpoint to get wallet balance (optional)
-app.get('/balance/:userId/:symbol', async (req, res) => {
-  const { userId, symbol } = req.params;
+// Endpoint to get wallet balance
+app.get('/balance/:userId/:symbol', verifyToken, async (req, res) => {
+  const { symbol } = req.params;
+  const userId = req.userId;
 
-  if (!userId || !symbol || !networkMap[symbol]) {
+  if (!symbol || !networkMap[symbol]) {
     logger.error(`Invalid balance request: userId=${userId}, symbol=${symbol}`);
-    return res.status(400).json({ error: 'Invalid userId or symbol' });
+    return res.status(400).json({ error: 'Invalid symbol' });
   }
 
   try {
@@ -129,30 +159,33 @@ app.get('/balance/:userId/:symbol', async (req, res) => {
     }
 
     let balance;
+    const usdtContractAddress = process.env.NODE_ENV === 'production'
+      ? 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'
+      : 'TXYZ...'; // Replace with testnet USDT contract address
     switch (symbol) {
       case 'BTC':
-        balance = await tatum.api.btcGetBalance(address);
+        balance = (await tatum.api.btcGetBalance(address)).balance / 1e8;
         break;
       case 'BNB':
-        balance = await tatum.api.bscGetBalance(address);
+        balance = (await tatum.api.bscGetBalance(address)).balance / 1e18;
         break;
       case 'ETH':
-        balance = await tatum.api.ethGetBalance(address);
+        balance = (await tatum.api.ethGetBalance(address)).balance / 1e18;
         break;
       case 'LTC':
-        balance = await tatum.api.ltcGetBalance(address);
+        balance = (await tatum.api.ltcGetBalance(address)).balance / 1e8;
         break;
       case 'TRX':
-        balance = await tatum.api.tronGetAccount(address);
+        balance = (await tatum.api.tronGetAccount(address)).balance / 1e6;
         break;
       case 'USDT TRC-20':
-        balance = await tatum.api.tronTrc20GetBalance(address, 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'); // USDT contract address
+        balance = (await tatum.api.tronTrc20GetBalance(address, usdtContractAddress)).balance / 1e6;
         break;
       default:
         throw new Error('Unsupported symbol');
     }
 
-    res.json({ balance });
+    res.json({ balance: balance.toString() });
   } catch (error) {
     logger.error(`Error fetching balance for ${symbol}: ${error.message}`);
     res.status(500).json({ error: 'Failed to fetch balance' });
@@ -162,6 +195,4 @@ app.get('/balance/:userId/:symbol', async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   logger.info(`Server running on port ${PORT}`);
-}); Main {
-    
-}
+});
