@@ -3,7 +3,6 @@
   "version": "1.0.0",
   "description": "Backend for Flutter crypto wallet app using Tatum",
   "main": "server.js",
-  "license": "MIT",
   "engines": {
     "node": "18.x"
   },
@@ -24,25 +23,8 @@
     "nodemon": "^2.0.22"
   },
   "overrides": {
-    "ethereumjs-wallet": "npm:@ethereumjs/wallet@latest",
-    "@elrondnetwork/erdjs": "npm:@multiversx/sdk-core@latest",
-    "uuid": "^9.0.0",
-    "@tronweb3/google-protobuf": "npm:google-protobuf@latest",
-    "@ledgerhq/hw-transport-u2f": "npm:@ledgerhq/hw-transport-webusb@latest",
-    "@walletconnect/client": "^2.0.0",
-    "mkdirp-promise": "npm:mkdirp@latest",
-    "glob": "^10.0.0",
-    "rimraf": "^5.0.0",
-    "inflight": "npm:lru-cache@latest",
-    "yaeti": "^1.0.2",
-    "request": "^2.88.2",
-    "cids": "npm:multiformats@latest",
-    "multicodec": "npm:multiformats@latest",
-    "multibase": "npm:multiformats@latest",
-    "multihashes": "npm:multiformats@latest",
-    "npmlog": "^7.0.0",
-    "har-validator": "^5.1.5",
-    "are-we-there-yet": "^4.0.0",
-    "gauge": "^5.0.0"
-  }
+    "ethereumjs-wallet": "npm:@ethereumjs/wallet@^2.0.0",
+    "uuid": "^9.0.0"
+  },
+  "license": "MIT"
 }

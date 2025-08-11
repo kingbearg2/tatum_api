@@ -30,10 +30,19 @@ admin.initializeApp({
 });
 const db = admin.firestore();
 
-// Initialize Tatum SDK
+// Initialize Tatum SDK with specific networks
 const tatum = await TatumSDK.init({
   network: process.env.NODE_ENV === 'production' ? Network.MAINNET : Network.TESTNET,
   apiKey: process.env.TATUM_API_KEY,
+  configure: {
+    enabledNetworks: [
+      Network.BITCOIN,
+      Network.BINANCE_SMART_CHAIN,
+      Network.ETHEREUM,
+      Network.LITECOIN,
+      Network.TRON,
+    ],
+  },
 });
 
 // Map symbols to Tatum networks
@@ -161,7 +170,7 @@ app.get('/balance/:userId/:symbol', verifyToken, async (req, res) => {
     let balance;
     const usdtContractAddress = process.env.NODE_ENV === 'production'
       ? 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'
-      : 'TXYZ...'; // Replace with testnet USDT contract address
+      : 'TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj'; // Testnet USDT TRC-20 address
     switch (symbol) {
       case 'BTC':
         balance = (await tatum.api.btcGetBalance(address)).balance / 1e8;
