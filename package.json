@@ -23,6 +23,7 @@
     "nodemon": "^2.0.22"
   },
   "overrides": {
+    "@solana/codecs-numbers": "2.0.0",
     "ethereumjs-wallet": "npm:@ethereumjs/wallet@^2.0.0",
     "uuid": "^9.0.0"
   },
